@@ -9,7 +9,7 @@ USE_SHARED?=0
 HAVE_OPENBLAS_CLAPACK?=1
 HAVE_MKL?=0
 HAVE_ACCELERATE=0
-HAVE_CUDA?=0
+HAVE_CUDA?=1
 # Compiler
 CXX?=g++
 EXT?=so
@@ -38,9 +38,17 @@ CFLAGS=-g -O3 -std=c++17 -Wno-deprecated-declarations -fPIC -DFST_NO_DYNAMIC_LIN
 LDFLAGS=
 
 ifeq ($(USE_SHARED), 0)
+    # Detect the path to static libgfortran automatically
+    #LIBGFORTRAN_PATH := $(shell $(CXX) -print-file-name=libgfortran.a)
+    #LIBQUADMATH_PATH := $(shell $(CXX) -print-file-name=libquadmath.a)
+    #$(LIBGFORTRAN_PATH) \
+    #$(LIBQUADMATH_PATH) \
+
     LIBS = \
         $(KALDI_ROOT)/src/online2/kaldi-online2.a \
         $(KALDI_ROOT)/src/decoder/kaldi-decoder.a \
+        $(KALDI_ROOT)/src/nnet2/kaldi-nnet2.a \
+        $(KALDI_ROOT)/src/chain/kaldi-chain.a \
         $(KALDI_ROOT)/src/ivector/kaldi-ivector.a \
         $(KALDI_ROOT)/src/gmm/kaldi-gmm.a \
         $(KALDI_ROOT)/src/tree/kaldi-tree.a \
@@ -71,10 +79,7 @@ ifeq ($(HAVE_OPENBLAS_CLAPACK), 1)
     CFLAGS += -I$(OPENBLAS_ROOT)/include
     ifeq ($(USE_SHARED), 0)
         LIBS += \
-            $(OPENBLAS_ROOT)/lib/libopenblas.a \
-            $(OPENBLAS_ROOT)/lib/liblapack.a \
-            $(OPENBLAS_ROOT)/lib/libblas.a \
-            $(OPENBLAS_ROOT)/lib/libf2c.a
+            $(OPENBLAS_ROOT)/lib/libopenblas.a
     else
         LDFLAGS += -lopenblas -llapack -lblas -lf2c
     endif
@@ -103,13 +108,25 @@ ifeq ($(HAVE_CUDA), 1)
     LDFLAGS += -L$(CUDA_ROOT)/lib64 -lcuda -lcublas -lcusparse -lcudart -lcurand -lcufft -lcusolver -lnvToolsExt
 endif
 
-all: $(OUTDIR)/libvosk.$(EXT)
+all: $(OUTDIR)/libvosk.$(EXT) $(OUTDIR)/libvosk.a
 
 $(OUTDIR)/libvosk.$(EXT): $(VOSK_SOURCES:%.cc=$(OUTDIR)/%.o) $(LIBS)
 	$(CXX) --shared -s -o $@ $^ $(LDFLAGS) $(EXTRA_LDFLAGS)
+
+$(OUTDIR)/libvosk.a: $(VOSK_SOURCES:%.cc=$(OUTDIR)/%.o) $(LIBS)
+	@echo "MERGING STATIC LIBRARY: $@"
+	rm -f libvosk.a
+	@echo "create $@" > libvosk.mri
+	@$(foreach f,$(filter %.o,$^),echo "addmod $(f)" >> libvosk.mri;)
+	@$(foreach f,$(filter %.a,$^),echo "addlib $(f)" >> libvosk.mri;)
+	@echo "save" >> libvosk.mri
+	@echo "end" >> libvosk.mri
+	$(AR) -M < libvosk.mri
+	@rm libvosk.mri
+
 
 $(OUTDIR)/%.o: %.cc $(VOSK_HEADERS)
 	$(CXX) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f *.o *.so *.dll
+	#rm -f *.o *.so *.dll
