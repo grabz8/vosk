@@ -756,37 +756,38 @@ void Recognizer::AddPitchToJSON(json::JSON &obj) {
     for (size_t i = 0; i < validated_samples_.size(); ++i) {
         wave(i) = static_cast<float>(validated_samples_[i]);
     }
-
     PitchExtractionOptions opts;
     opts.samp_freq = sample_frequency_;
     opts.frame_shift_ms = 10.0;  // Keep 10ms for high resolution
+    opts.nccf_ballast = 0.05; // Keep tracker sensitive
+    opts.min_f0 = 40;
+    opts.max_f0 = 500;
 
     Matrix<BaseFloat> pitch_matrix;
     ComputeKaldiPitch(opts, wave, &pitch_matrix);
 
-	// MATCH VOSK TIMELINE:
-	// Session Start + (Current Utterance Offset + Pitch Frame Index) * Time per Frame
-    //double session_start_s = (double)samples_round_start_ / sample_frequency_;
-    //double start_time = session_start_s + (frame_offset_ * 0.01);
-
-    // 3. Construct the "pitch" object
+    // Construct the "pitch" object
     json::JSON pitch_obj;
     pitch_obj["step"] = opts.frame_shift_ms;
     pitch_obj["start"] = buffer_start_time_; // The anchored time including pre-roll
     pitch_obj["end"] = buffer_start_time_ + (pitch_matrix.NumRows() * (opts.frame_shift_ms / 1000.0));
-
+    
     json::JSON contour = json::Array();
+    json::JSON confidence = json::Array();
+
     for (int i = 0; i < pitch_matrix.NumRows(); ++i) {
-        float nccf = pitch_matrix(i, 0); // Confidence (POV)
+        float nccf = pitch_matrix(i, 0); // Confidence (0.0 to 1.0)
         float f0 = pitch_matrix(i, 1);   // Pitch in Hz
 
-        // Filter and cast to integer to save tokens/space
-        if (nccf < 0.3) {  // Standard unvoiced filter
-            f0 = 0.0;
-        } 
-        contour.append((int)f0); // Integer Hz is sufficient for TTS
+        // Always append raw F0 (no zeroing)
+        contour.append((int)f0);  // Integer Hz is sufficient for TTS
+
+        // Convert NCCF to percentage (0-100)
+        int conf_pct = std::clamp((int)(nccf * 100.0f), 0, 100);
+        confidence.append(conf_pct);
     }
     
+    pitch_obj["confidence"] = confidence;
     pitch_obj["contour"] = contour;
     obj["pitch"] = pitch_obj;
 }
