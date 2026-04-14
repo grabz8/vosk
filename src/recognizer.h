@@ -31,8 +31,10 @@
 
 #include "model.h"
 #include "spk_model.h"
+#include "json.h"
 
 #include <string>
+#include <vector>
 
 using namespace kaldi;
 
@@ -62,8 +64,12 @@ class Recognizer {
         const char* FinalResult();
         const char* PartialResult();
         void Reset();
-        
+        const std::vector<int16_t>& GetValidatedSamples() const { return validated_samples_; }
+
     private:
+        std::vector<int16_t> validated_samples_;
+        bool speech_started_ = false;
+        bool IsEmptyResult(json::JSON &obj);
         void InitState();
         void InitRescoring();
         void CleanUp();

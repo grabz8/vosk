@@ -423,6 +423,12 @@ void vosk_batch_recognizer_pop(VoskBatchRecognizer *recognizer);
 /** Get amount of pending chunks for more intelligent waiting */
 int vosk_batch_recognizer_get_pending_chunks(VoskBatchRecognizer *recognizer);
 
+/** Returns the internal audio buffer for the last result. 
+ *  @param length - pointer to int to receive the number of samples
+ *  @returns pointer to the internal short array. Valid until next AcceptWaveform or Reset.
+ */
+const short *vosk_recognizer_get_samples(VoskRecognizer *recognizer, int *length);
+
 #ifdef __cplusplus
 }
 #endif

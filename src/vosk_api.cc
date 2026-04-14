@@ -285,3 +285,10 @@ int vosk_batch_recognizer_get_pending_chunks(VoskBatchRecognizer *recognizer)
     return 0;
 #endif
 }
+
+const short *vosk_recognizer_get_samples(VoskRecognizer *recognizer, int *length) {
+    Recognizer *rec = reinterpret_cast<Recognizer *>(recognizer);
+    const std::vector<int16_t>& samples = rec->GetValidatedSamples();
+    *length = (int)samples.size();
+    return samples.data();
+}

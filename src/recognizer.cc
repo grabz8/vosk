@@ -275,6 +275,8 @@ void Recognizer::SetSpkModel(SpkModel *spk_model)
 
 bool Recognizer::AcceptWaveform(const char *data, int len)
 {
+    const int16_t *s = reinterpret_cast<const int16_t*>(data);
+    validated_samples_.insert(validated_samples_.end(), s, s + (len / sizeof(int16_t)));
     Vector<BaseFloat> wave;
     wave.Resize(len / 2, kUndefined);
     for (int i = 0; i < len / 2; i++)
@@ -305,16 +307,49 @@ bool Recognizer::AcceptWaveform(Vector<BaseFloat> &wdata)
     // Cleanup if we finalized previous utterance or the whole feature pipeline
     if (!(state_ == RECOGNIZER_RUNNING || state_ == RECOGNIZER_INITIALIZED)) {
         CleanUp();
+        // Reset our gating flag for the new utterance
+        speech_started_ = false;
+        validated_samples_.clear(); // CLEAR BUFFER HERE: start of new recording
     }
     state_ = RECOGNIZER_RUNNING;
 
+    // 0.2s is the standard chunk size for Vosk/Kaldi processing
     int step = static_cast<int>(sample_frequency_ * 0.2);
-    for (int i = 0; i < wdata.Dim(); i+= step) {
-        SubVector<BaseFloat> r = wdata.Range(i, std::min(step, wdata.Dim() - i));
+    
+    for (int i = 0; i < wdata.Dim(); i += step) {
+        int current_step_size = std::min(step, wdata.Dim() - i);
+        SubVector<BaseFloat> r = wdata.Range(i, current_step_size);
+        
         feature_pipeline_->AcceptWaveform(sample_frequency_, r);
         UpdateSilenceWeights();
         decoder_->AdvanceDecoding();
+
+        // Check if the decoder has found a likely word path
+        // (Usually occurs after ~10-15 frames of audio)
+        if (!speech_started_ && decoder_->NumFramesDecoded() > 10) {
+            speech_started_ = true;
+        }
+
+        // Buffer Management:
+        if (speech_started_) {
+            // Once speech is detected, accumulate into our validated buffer
+            for (int j = 0; j < r.Dim(); j++) {
+                validated_samples_.push_back(static_cast<int16_t>(r(j)));
+            }
+        } else {
+            // OPTIONAL: "Pre-roll" logic. 
+            // While waiting for speech, we can keep the last ~200ms in 
+            // validated_samples_ so the beginning of the word isn't clipped.
+            if (validated_samples_.size() > sample_frequency_ * 0.2) {
+                validated_samples_.erase(validated_samples_.begin(), 
+                                         validated_samples_.begin() + current_step_size);
+            }
+            for (int j = 0; j < r.Dim(); j++) {
+                validated_samples_.push_back(static_cast<int16_t>(r(j)));
+            }
+        }
     }
+
     samples_processed_ += wdata.Dim();
 
     if (spk_feature_) {
@@ -324,8 +359,13 @@ bool Recognizer::AcceptWaveform(Vector<BaseFloat> &wdata)
     if (decoder_->EndpointDetected(model_->endpoint_config_)) {
         return true;
     }
-
     return false;
+// original code
+//    Vector<BaseFloat> wave;
+//    wave.Resize(len / 2, kUndefined);
+//    for (int i = 0; i < len / 2; i++)
+//        wave(i) = *(((short *)data) + i);
+//    return AcceptWaveform(wave);
 }
 
 // Computes an xvector from a chunk of speech features.
@@ -580,7 +620,11 @@ const char *Recognizer::MbrResult(CompactLattice &rlat)
             obj["spk_frames"] = num_spk_frames;
         }
     }
-
+    if (IsEmptyResult(obj)) {
+        speech_started_ = false;
+        validated_samples_.clear();
+        return ""; // Need2Fix: should stop message entirely
+    }
     return StoreReturn(obj.dump());
 }
 
@@ -644,6 +688,47 @@ static bool CompactLatticeToWordAlignmentWeight(const CompactLattice &clat,
   }
 }
 
+bool Recognizer::IsEmptyResult(json::JSON &obj) {
+    // 1. phonemes mode
+    if (obj.hasKey("result")) {
+        auto result_list = obj["result"];
+        for (int i = 0; i < result_list.size(); i++) {
+            json::JSON entry = result_list[i];
+            
+            // Check word label
+            std::string word = entry.hasKey("word") ? entry["word"].ToString() : "";
+            // Check phonemes if present
+            bool has_real_phones = false;
+            if (entry.hasKey("phone_label")) {
+                auto labels = entry["phone_label"];
+                for (int j = 0; j < labels.size(); j++) {
+                    std::string p = labels[j].ToString(); // Fix: Use ToString()
+                    if (p != "SIL" && !p.empty()) { //&& p != "[unk]"
+                        has_real_phones = true;
+                        break;
+                    }
+                }
+            }
+            // If we found a real word or a real phoneme, it's not empty
+            if ((!word.empty() && word != "<eps>") || has_real_phones) {
+                return false;
+            }
+        }
+    // 2. text mode
+    } else if (obj.hasKey("text") && !obj["text"].ToString().empty()) {
+        return false;
+    }
+    
+    // 3. check for N-best alternatives
+    if (obj.hasKey("alternatives")) {
+        auto alts = obj["alternatives"];
+        for (int i = 0; i < alts.size(); i++) {
+            if (!IsEmptyResult(alts[i])) return false;
+        }
+    }
+    // Only SIL or <eps> found
+    return true;
+}
 
 const char *Recognizer::NbestResult(CompactLattice &clat)
 {
@@ -705,7 +790,11 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
       entry["confidence"]= likelihood;
       obj["alternatives"].append(entry);
     }
-
+    if (IsEmptyResult(obj)) {
+        speech_started_ = false;
+        validated_samples_.clear();
+        return ""; // Need2Fix: should stop message entirely
+    }
     return StoreReturn(obj.dump());
 }
 
@@ -771,6 +860,9 @@ const char *Recognizer::NlsmlResult(CompactLattice &clat)
 
 const char* Recognizer::GetResult()
 {
+	// RESET GATE HERE: This ensures every time a result is generated,
+	// we stop accumulating and wait for new speech.
+	speech_started_ = false;
     if (decoder_->NumFramesDecoded() == 0) {
         return StoreEmptyReturn();
     }
@@ -953,6 +1045,8 @@ void Recognizer::Reset()
     }
     StoreEmptyReturn();
     state_ = RECOGNIZER_ENDPOINT;
+	validated_samples_.clear();
+	speech_started_ = false;
 }
 
 const char *Recognizer::StoreEmptyReturn()
