@@ -328,10 +328,27 @@ bool Recognizer::AcceptWaveform(Vector<BaseFloat> &wdata)
         // (Usually occurs after ~10-15 frames of audio)
         if (!speech_started_ && decoder_->NumFramesDecoded() > 10) {
             speech_started_ = true;
+            
+            // ANCHOR CALCULATION:
+            // We calculate the time of the CURRENT frame.
+            double current_frame_time = (double)samples_round_start_ / sample_frequency_ + 
+                                        (frame_offset_ + decoder_->NumFramesDecoded()) * 0.03;
+            
+            // But our buffer already has "pre-roll" samples in it!
+            // We must subtract the duration of the pre-roll to find the TRUE start of the buffer.
+            double pre_roll_duration = (double)validated_samples_.size() / sample_frequency_;
+            buffer_start_time_ = current_frame_time - pre_roll_duration;
+            
+            // Capture the absolute global frame offset v1 (failed)
+            speech_start_frame_ = frame_offset_ + decoder_->NumFramesDecoded();
         }
 
         // Buffer Management:
         if (speech_started_) {
+            // If this is the first sample of the new buffer, anchor the global time
+            //if (validated_samples_.empty()) {
+            //    buffer_start_time_ = samples_round_start_ / sample_frequency_ + (frame_offset_ + decoder_->NumFramesDecoded()) * 0.03;
+            //}
             // Once speech is detected, accumulate into our validated buffer
             for (int j = 0; j < r.Dim(); j++) {
                 validated_samples_.push_back(static_cast<int16_t>(r(j)));
@@ -625,6 +642,7 @@ const char *Recognizer::MbrResult(CompactLattice &rlat)
         validated_samples_.clear();
         return ""; // Need2Fix: should stop message entirely
     }
+    AddPitchToJSON(obj);
     return StoreReturn(obj.dump());
 }
 
@@ -730,6 +748,49 @@ bool Recognizer::IsEmptyResult(json::JSON &obj) {
     return true;
 }
 
+void Recognizer::AddPitchToJSON(json::JSON &obj) {
+    if (validated_samples_.empty()) return;
+
+    // Convert internal buffer to Kaldi float vector
+    Vector<BaseFloat> wave(validated_samples_.size());
+    for (size_t i = 0; i < validated_samples_.size(); ++i) {
+        wave(i) = static_cast<float>(validated_samples_[i]);
+    }
+
+    PitchExtractionOptions opts;
+    opts.samp_freq = sample_frequency_;
+    opts.frame_shift_ms = 10.0;  // Keep 10ms for high resolution
+
+    Matrix<BaseFloat> pitch_matrix;
+    ComputeKaldiPitch(opts, wave, &pitch_matrix);
+
+	// MATCH VOSK TIMELINE:
+	// Session Start + (Current Utterance Offset + Pitch Frame Index) * Time per Frame
+    //double session_start_s = (double)samples_round_start_ / sample_frequency_;
+    //double start_time = session_start_s + (frame_offset_ * 0.01);
+
+    // 3. Construct the "pitch" object
+    json::JSON pitch_obj;
+    pitch_obj["step"] = opts.frame_shift_ms;
+    pitch_obj["start"] = buffer_start_time_; // The anchored time including pre-roll
+    pitch_obj["end"] = buffer_start_time_ + (pitch_matrix.NumRows() * (opts.frame_shift_ms / 1000.0));
+
+    json::JSON contour = json::Array();
+    for (int i = 0; i < pitch_matrix.NumRows(); ++i) {
+        float nccf = pitch_matrix(i, 0); // Confidence (POV)
+        float f0 = pitch_matrix(i, 1);   // Pitch in Hz
+
+        // Filter and cast to integer to save tokens/space
+        if (nccf < 0.3) {  // Standard unvoiced filter
+            f0 = 0.0;
+        } 
+        contour.append((int)f0); // Integer Hz is sufficient for TTS
+    }
+    
+    pitch_obj["contour"] = contour;
+    obj["pitch"] = pitch_obj;
+}
+
 const char *Recognizer::NbestResult(CompactLattice &clat)
 {
     Lattice lat;
@@ -795,6 +856,7 @@ const char *Recognizer::NbestResult(CompactLattice &clat)
         validated_samples_.clear();
         return ""; // Need2Fix: should stop message entirely
     }
+    AddPitchToJSON(obj);
     return StoreReturn(obj.dump());
 }
 
