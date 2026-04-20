@@ -85,6 +85,13 @@ class Recognizer {
         const char *MbrResult(CompactLattice &clat);
         const char *NbestResult(CompactLattice &clat);
         const char *NlsmlResult(CompactLattice &clat);
+		json::JSON PackageResult(
+			CompactLattice &aligned_lat,
+			const std::vector<int32> &words,
+			const std::vector<BaseFloat> &confs,
+			const std::vector<std::pair<BaseFloat, BaseFloat>> &times,
+			bool partial = false
+		);
 
         Model *model_ = nullptr;
         SingleUtteranceNnet3IncrementalDecoder *decoder_ = nullptr;

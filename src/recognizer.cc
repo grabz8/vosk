@@ -519,6 +519,100 @@ void ComputePhoneInfo(const TransitionModel &tmodel, const CompactLattice &clat,
     
 }
 
+	
+json::JSON Recognizer::PackageResult(
+	CompactLattice &aligned_lat,
+	const std::vector<int32> &words,
+	const std::vector<BaseFloat> &confs,
+	const std::vector<std::pair<BaseFloat, BaseFloat>> &times,
+	bool partial
+)
+{
+
+    std::vector<std::vector<std::string> > phoneme_labels;
+    std::vector<std::vector<int32> > phone_lengths;
+    int phon_vec_size = 1;
+    int size = words.size();
+
+    if (model_->phone_syms_loaded_ && (result_opts_ == "phones")){
+        //Compute phone info if phone symbol table is provided  
+        ComputePhoneInfo(*model_->trans_model_, aligned_lat, *model_->word_syms_, *model_->phone_symbol_table_, &phoneme_labels, &phone_lengths);
+        phon_vec_size = phoneme_labels.size();
+	}
+	
+    json::JSON obj;
+    stringstream text;
+    int phone_ptr=0;
+    // Create JSON object
+    for (int i = 0; i < size; i++) {
+        json::JSON word;
+
+		word["word"] = model_->word_syms_->Find(words[i]);
+		word["start"] = samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].first) * 0.03;
+		word["end"] = samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].second) * 0.03;
+		word["conf"] = confs[i];
+
+        //When printing silences some extra silence words that we call "gaps" that have length of 0 seconds 
+        //get printed out so we filter them out
+        //It is possible to have trailing silences in the word output that are not present in the phone output so we 
+        //filter them to generate consistent outputs
+        if ((samples_round_start_ / sample_frequency_ + (frame_offset_ + (times[i].second-times[i].first)) * 0.03) > 0.0 && phone_ptr < phon_vec_size) {
+			//do it
+		} else {
+			continue;
+		}
+            
+		//Add phone info to json if phone symbol table is provided
+		if (model_->phone_syms_loaded_ && (result_opts_ == "phones")){  
+			kaldi::BaseFloat phone_start_time = 0.0;
+			kaldi::BaseFloat phone_end_time = 0.0;
+					
+			//If there are silences without phone output (since they are coming from different places) then set the label and timestamps
+			if (words[i] == 0 && phoneme_labels[phone_ptr][0] != "SIL"){
+				word["phone_label"].append( "SIL" );
+				phone_start_time=samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].first) * 0.03;
+				phone_end_time = samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].second) * 0.03;
+				word["phone_start"].append( phone_start_time );
+				word["phone_end"].append( phone_end_time );
+			}
+
+			//Else add the information generated from ComputePhoneInfo to results
+			else {
+				for ( auto phone: phoneme_labels[phone_ptr]){
+
+					word["phone_label"].append( phone );
+				}                               
+				for (int x=0; x < phone_lengths[phone_ptr].size(); x++){
+					if (x==0){
+						phone_start_time=samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].first) * 0.03;
+						phone_end_time = phone_start_time + (phone_lengths[phone_ptr][x]) * 0.03;
+					}
+					else{
+						phone_start_time = phone_end_time;
+						phone_end_time = phone_start_time + (phone_lengths[phone_ptr][x]) * 0.03;
+					}
+					word["phone_start"].append( phone_start_time );
+					word["phone_end"].append( phone_end_time );
+				}
+				phone_ptr += 1;
+			}
+		}
+		
+		obj["result"].append(word);
+
+		if (words[i] != 0){ // Don't print silence symbols
+			if (i) {
+				text << " ";
+			}
+			text << model_->word_syms_->Find(words[i]); 
+		}
+    }
+    obj["text"] = text.str();
+	return obj;
+
+}
+
+
 const char *Recognizer::MbrResult(CompactLattice &rlat)
 {
 
@@ -531,101 +625,21 @@ const char *Recognizer::MbrResult(CompactLattice &rlat)
 
     kaldi::MinimumBayesRiskOptions mbr_options;
 
-    std::vector<std::vector<std::string> > phoneme_labels;
-    std::vector<std::vector<int32> > phone_lengths;
-    int phon_vec_size = 1;
 
     if (model_->phone_syms_loaded_ && (result_opts_ == "phones")){  
-        //Compute phone info if phone symbol table is provided  
-
-        ComputePhoneInfo(*model_->trans_model_, aligned_lat, *model_->word_syms_, *model_->phone_symbol_table_, &phoneme_labels, &phone_lengths);
-        phon_vec_size = phoneme_labels.size();
         mbr_options.print_silence = true; //Print silences in the word-level outputs only if you need phone outputs
         mbr_options.decode_mbr = false; // Turn off MBR decoding if you want to print out phone information
     }
     
     MinimumBayesRisk mbr(aligned_lat, mbr_options);
-    const vector<BaseFloat> &conf = mbr.GetOneBestConfidences();
-    const vector<int32> &word_ids = mbr.GetOneBest();
-    const vector<pair<BaseFloat, BaseFloat> > &times =
-          mbr.GetOneBestTimes();
 
-    int size = word_ids.size();
+	json::JSON obj = PackageResult(
+		aligned_lat,
+		mbr.GetOneBest(),
+		mbr.GetOneBestConfidences(),
+		mbr.GetOneBestTimes()
+	);
 
-    json::JSON obj;
-    stringstream text;
-    int phone_ptr=0;
-    // Create JSON object
-    for (int i = 0; i < size; i++) {
-        json::JSON word;
-
-        if (words_) {
-            word["word"] = model_->word_syms_->Find(word_ids[i]);
-            word["start"] = samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].first) * 0.03;
-            word["end"] = samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].second) * 0.03;
-            word["conf"] = conf[i];
-            obj["result"].append(word);
-        }
-    
-    
-        //When printing silences some extra silence words that we call "gaps" that have length of 0 seconds 
-        //get printed out so we filter them out
-        //It is possible to have trailing silences in the word output that are not present in the phone output so we 
-        //filter them to generate consistent outputs
-        if ((samples_round_start_ / sample_frequency_ + (frame_offset_ + (times[i].second-times[i].first)) * 0.03) > 0.0 && phone_ptr < phon_vec_size) {
-            
-            word["word"] = model_->word_syms_->Find(word_ids[i]);
-            word["start"] = samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].first) * 0.03;
-            word["end"] = samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].second) * 0.03;
-            word["conf"] = conf[i];
-
-            //Add phone info to json if phone symbol table is provided
-            if (model_->phone_syms_loaded_ && (result_opts_ == "phones")){  
-                kaldi::BaseFloat phone_start_time = 0.0;
-                kaldi::BaseFloat phone_end_time = 0.0;
-                        
-                //If there are silences without phone output (since they are coming from different places) then set the label and timestamps
-                if (word_ids[i] == 0 && phoneme_labels[phone_ptr][0] != "SIL"){
-                    word["phone_label"].append( "SIL" );
-                    phone_start_time=samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].first) * 0.03;
-                    phone_end_time = samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].second) * 0.03;
-                    word["phone_start"].append( phone_start_time );
-                    word["phone_end"].append( phone_end_time );
-                }
-
-                //Else add the information generated from ComputePhoneInfo to results
-                else {
-                    for ( auto phone: phoneme_labels[phone_ptr]){
-
-                        word["phone_label"].append( phone );
-                    }                               
-                    for (int x=0; x < phone_lengths[phone_ptr].size(); x++){
-                        if (x==0){
-                            phone_start_time=samples_round_start_ / sample_frequency_ + (frame_offset_ + times[i].first) * 0.03;
-                            phone_end_time = phone_start_time + (phone_lengths[phone_ptr][x]) * 0.03;
-                        }
-                        else{
-                            phone_start_time = phone_end_time;
-                            phone_end_time = phone_start_time + (phone_lengths[phone_ptr][x]) * 0.03;
-                        }
-                        word["phone_start"].append( phone_start_time );
-                        word["phone_end"].append( phone_end_time );
-                    }               
-                    phone_ptr += 1;
-                }                
-            }
-            
-            obj["result"].append(word);
-
-            if (word_ids[i] != 0){ // Don't print silence symbols
-                if (i) {
-                    text << " ";
-                }
-                text << model_->word_syms_->Find(word_ids[i]); 
-            }
-        }       
-    }
-    obj["text"] = text.str();
 
     if (spk_model_) {
         Vector<BaseFloat> xvector;
