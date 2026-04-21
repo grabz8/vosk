@@ -86,11 +86,11 @@ class Recognizer {
         const char *NbestResult(CompactLattice &clat);
         const char *NlsmlResult(CompactLattice &clat);
 		json::JSON PackageResult(
-			CompactLattice &aligned_lat,
 			const std::vector<int32> &words,
-			const std::vector<BaseFloat> &confs,
-			const std::vector<std::pair<BaseFloat, BaseFloat>> &times,
-			bool partial = false
+			const std::vector<BaseFloat> &confs =  {},
+			const std::vector<std::pair<BaseFloat, BaseFloat>> &times =  {},
+			const CompactLattice &aligned_lat =  {},
+			bool partial_ = false
 		);
 
         Model *model_ = nullptr;
