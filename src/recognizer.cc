@@ -528,7 +528,8 @@ json::JSON Recognizer::PackageResult(
 	bool partial
 )
 {
-
+	std::string text_key = partial ? "partial" : "text";
+	std::string result_key = partial ? "partial_result" : "result";
     std::vector<std::vector<std::string> > phoneme_labels;
     std::vector<std::vector<int32> > phone_lengths;
     int phon_vec_size = 1;
@@ -598,7 +599,7 @@ json::JSON Recognizer::PackageResult(
 			}
 		}
 		
-		obj["result"].append(word);
+		obj[result_key].append(word);
 
 		if (words[i] != 0){ // Don't print silence symbols
 			if (i) {
@@ -607,7 +608,7 @@ json::JSON Recognizer::PackageResult(
 			text << model_->word_syms_->Find(words[i]); 
 		}
     }
-    obj["text"] = text.str();
+    obj[text_key] = text.str();
 	return obj;
 
 }
