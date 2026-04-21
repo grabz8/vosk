@@ -67,12 +67,17 @@ class Recognizer {
         const std::vector<int16_t>& GetValidatedSamples() const { return validated_samples_; }
 
     private:
-        std::vector<int16_t> validated_samples_;
-        void AddPitchToJSON(json::JSON &obj);
+		std::vector<int16_t> validated_samples_;
+		std::vector<int> accumulated_pitch_contour_;
+		std::vector<int> accumulated_pitch_confidence_;
+		int pitch_last_sample_index_ = 0; // Tracks progress in validated_samples_
+		void AddPitchToJSON(json::JSON &obj);
+		void AddPartialPitchToJSON(json::JSON &obj);
+		void UpdateIncrementalPitch();
         bool speech_started_ = false;
         int32_t speech_start_frame_ = 0; // The global anchor
-        double buffer_start_time_ = 0.0;
-        bool IsEmptyResult(json::JSON &obj);
+		double buffer_start_time_ = 0.0;
+		bool IsEmptyResult(json::JSON &obj);
         void InitState();
         void InitRescoring();
         void CleanUp();

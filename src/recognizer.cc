@@ -345,26 +345,25 @@ bool Recognizer::AcceptWaveform(Vector<BaseFloat> &wdata)
 
         // Buffer Management:
         if (speech_started_) {
-            // If this is the first sample of the new buffer, anchor the global time
+            // [obsolete/useless?] If this is the first sample of the new buffer, anchor the global time
             //if (validated_samples_.empty()) {
             //    buffer_start_time_ = samples_round_start_ / sample_frequency_ + (frame_offset_ + decoder_->NumFramesDecoded()) * 0.03;
             //}
-            // Once speech is detected, accumulate into our validated buffer
-            for (int j = 0; j < r.Dim(); j++) {
-                validated_samples_.push_back(static_cast<int16_t>(r(j)));
-            }
+
         } else {
-            // OPTIONAL: "Pre-roll" logic. 
+            // Pre-roll. 
             // While waiting for speech, we can keep the last ~200ms in 
             // validated_samples_ so the beginning of the word isn't clipped.
             if (validated_samples_.size() > sample_frequency_ * 0.2) {
                 validated_samples_.erase(validated_samples_.begin(), 
                                          validated_samples_.begin() + current_step_size);
             }
-            for (int j = 0; j < r.Dim(); j++) {
-                validated_samples_.push_back(static_cast<int16_t>(r(j)));
-            }
         }
+		// We accumulate speech into our validated buffer at all times
+		for (int j = 0; j < r.Dim(); j++) {
+			validated_samples_.push_back(static_cast<int16_t>(r(j)));
+			UpdateIncrementalPitch();
+		}
     }
 
     samples_processed_ += wdata.Dim();
@@ -384,6 +383,40 @@ bool Recognizer::AcceptWaveform(Vector<BaseFloat> &wdata)
 //        wave(i) = *(((short *)data) + i);
 //    return AcceptWaveform(wave);
 }
+
+void Recognizer::UpdateIncrementalPitch() {
+    int current_size = validated_samples_.size();
+    
+    // We need at least a 30ms window to calculate a frame.
+    // If we have less than that since the last processed point, wait.
+    int available = current_size - pitch_last_sample_index_;
+    if (available < (sample_frequency_ * 0.03)) return;
+
+    // Grab the new samples
+    Vector<BaseFloat> new_wave(available);
+    for (int i = 0; i < available; ++i) {
+        new_wave(i) = static_cast<float>(validated_samples_[pitch_last_sample_index_ + i]);
+    }
+
+    PitchExtractionOptions opts;
+    opts.samp_freq = sample_frequency_;
+    opts.frame_shift_ms = 10.0; 
+    // The extractor will handle its own internal sliding window over new_wave
+
+    Matrix<BaseFloat> pitch_matrix;
+    ComputeKaldiPitch(opts, new_wave, &pitch_matrix);
+
+    for (int i = 0; i < pitch_matrix.NumRows(); ++i) {
+        accumulated_pitch_contour_.push_back((int)pitch_matrix(i, 1));
+        int conf_pct = std::clamp((int)(pitch_matrix(i, 0) * 100.0f), 0, 100);
+        accumulated_pitch_confidence_.push_back(conf_pct);
+    }
+
+    // Update the pointer
+    pitch_last_sample_index_ = current_size;
+}
+
+
 
 // Computes an xvector from a chunk of speech features.
 static void RunNnetComputation(const MatrixBase<BaseFloat> &features,
@@ -548,7 +581,7 @@ json::JSON Recognizer::PackageResult(
     stringstream text;
     int phone_ptr=0;
     // Create JSON object
-    for (int i = 0; i < size; i++) {
+    for (int i = 0, first = 1; i < size; i++) {
         json::JSON word;
 		
 		
@@ -609,7 +642,9 @@ json::JSON Recognizer::PackageResult(
 
 
 		if (words[i] != 0){ // Don't print silence symbols
-			if (i) {
+			if (first){
+				first = 0;
+			} else {
 				text << " ";
 			}
 			text << model_->word_syms_->Find(words[i]); 
@@ -811,6 +846,24 @@ void Recognizer::AddPitchToJSON(json::JSON &obj) {
     
     pitch_obj["confidence"] = confidence;
     pitch_obj["contour"] = contour;
+    obj["pitch"] = pitch_obj;
+}
+
+void Recognizer::AddPartialPitchToJSON(json::JSON &obj) {
+    if (accumulated_pitch_contour_.empty()) return;
+
+    json::JSON pitch_obj;
+    pitch_obj["step"] = 10.0;
+    pitch_obj["start"] = buffer_start_time_;
+    
+    // Copy the accumulated data
+    json::JSON contour = json::Array();
+    json::JSON confidence = json::Array();
+    for (int val : accumulated_pitch_contour_) contour.append(val);
+    for (int val : accumulated_pitch_confidence_) confidence.append(val);
+
+    pitch_obj["contour"] = contour;
+    pitch_obj["confidence"] = confidence;
     obj["pitch"] = pitch_obj;
 }
 
@@ -1076,7 +1129,7 @@ const char* Recognizer::PartialResult()
 		// Create JSON object
 		res = PackageResult( words, {}, {}, {}, true);
     }
-
+	AddPartialPitchToJSON(res);
     return StoreReturn(res.dump());
 }
 
